@@ -16,6 +16,7 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/storage/memory"
 	"github.com/paulmach/orb"
 	"github.com/paulmach/orb/geojson"
 	"github.com/paulmach/orb/planar"
@@ -28,13 +29,19 @@ func main() {
 	fs := flag.NewFlagSet("nsp-outage-sync", flag.ExitOnError)
 	var (
 		databaseFile = fs.String("database-file", "outages.db", "data file path")
-		repoPath     = fs.String("repo-path", "", "path to nspoweroutages git repo")
+		repoRemote   = fs.String("repo-remote", "https://github.com/danp/nspoweroutages.git", "git remote of nspoweroutages repo")
+		repoPath     = fs.String("repo-path", "", "path to nspoweroutages git repo clone, preferred over -repo-remote if set")
 		placesFile   = fs.String("places-file", "", "featurecollection geojson file to use for turning outage geometries into places, defaults to embedded data")
 	)
 	ff.Parse(fs, os.Args[1:])
 
-	if *repoPath == "" {
-		log.Fatal("need -repo-path")
+	var openRepo func() (*git.Repository, error)
+	if *repoPath != "" {
+		openRepo = localOpenRepo(*repoPath)
+	} else if *repoRemote != "" {
+		openRepo = remoteOpenRepo(*repoRemote)
+	} else {
+		log.Fatal("need -repo-remote or -repo-path")
 	}
 
 	db, err := sql.Open("sqlite", *databaseFile)
@@ -88,13 +95,29 @@ func main() {
 		return tracker.observe(t, outages)
 	}
 
-	if err := gitSource(*repoPath, "data/outages.json", maxObservedAt, consume); err != nil {
+	if err := gitSource(openRepo, "data/outages.json", maxObservedAt, consume); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func gitSource(path, outagesFileName string, since time.Time, consume func(time.Time, io.Reader) error) error {
-	repo, err := git.PlainOpen(path)
+func localOpenRepo(path string) func() (*git.Repository, error) {
+	return func() (*git.Repository, error) {
+		log.Println("gitSource using local path", path)
+		return git.PlainOpen(path)
+	}
+}
+
+func remoteOpenRepo(remote string) func() (*git.Repository, error) {
+	return func() (*git.Repository, error) {
+		log.Println("gitSource cloning from", remote)
+		return git.Clone(memory.NewStorage(), nil, &git.CloneOptions{
+			URL: remote,
+		})
+	}
+}
+
+func gitSource(openRepo func() (*git.Repository, error), outagesFileName string, since time.Time, consume func(time.Time, io.Reader) error) error {
+	repo, err := openRepo()
 	if err != nil {
 		return err
 	}
