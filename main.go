@@ -240,8 +240,8 @@ order by observed_at
 		var ou outage
 		var observedAtS string
 		var lon, lat sql.NullFloat64
-		var gp, county sql.NullString
-		if err := rows.Scan(&to.ID, &observedAtS, &ev.Name, &ou.ID, &ou.Desc.Cause, &ou.Desc.CustA.Val, &ou.Desc.Start, &ou.Desc.ETR, &gp, &lon, &lat, &county); err != nil {
+		var cause, gp, county sql.NullString
+		if err := rows.Scan(&to.ID, &observedAtS, &ev.Name, &ou.ID, &cause, &ou.Desc.CustA.Val, &ou.Desc.Start, &ou.Desc.ETR, &gp, &lon, &lat, &county); err != nil {
 			return nil, err
 		}
 
@@ -250,6 +250,8 @@ order by observed_at
 			return nil, err
 		}
 		ev.ObservedAt = observedAt
+
+		ou.Desc.Cause = cause.String
 
 		if gp.Valid && gp.String != "" {
 			ou.Geom.P = []string{gp.String}
