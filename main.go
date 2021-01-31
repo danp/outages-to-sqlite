@@ -210,7 +210,7 @@ func (s *store) init() error {
 		return err
 	}
 
-	if _, err := s.db.Exec("create table if not exists outages_events (outage_id integer references outages on delete cascade, observed_at datetime, event_name text, id text, cause text, cust_aff integer, start datetime, etr datetime, geom_p text, lon numeric, lat numeric, county text, primary key(outage_id, observed_at))"); err != nil {
+	if _, err := s.db.Exec("create table if not exists outages_events (outage_id integer references outages on delete cascade, observed_at datetime, event_name text, id text, cause text, cust_aff integer, start datetime, etr datetime, geom_p text, lon numeric, lat numeric, county text, neighborhood text, primary key(outage_id, observed_at))"); err != nil {
 		return err
 	}
 
@@ -221,7 +221,7 @@ func (s *store) currentOutages() (map[int]trackedOutage, error) {
 	rows, err := s.db.Query(`
 with max_observed_ats as (select outage_id, max(observed_at) as max_observed_at from outages_events group by outage_id)
 select outages_events.outage_id, observed_at, event_name, id, cause, cust_aff, start, etr,
-geom_p, lon, lat, county
+geom_p, lon, lat, county, neighborhood
 from outages_events, max_observed_ats
 where max_observed_ats.outage_id=outages_events.outage_id and
 max_observed_ats.max_observed_at=outages_events.observed_at and
@@ -240,8 +240,8 @@ order by observed_at
 		var ou outage
 		var observedAtS string
 		var lon, lat sql.NullFloat64
-		var cause, gp, county sql.NullString
-		if err := rows.Scan(&to.ID, &observedAtS, &ev.Name, &ou.ID, &cause, &ou.Desc.CustA.Val, &ou.Desc.Start, &ou.Desc.ETR, &gp, &lon, &lat, &county); err != nil {
+		var cause, gp, county, neighborhood sql.NullString
+		if err := rows.Scan(&to.ID, &observedAtS, &ev.Name, &ou.ID, &cause, &ou.Desc.CustA.Val, &ou.Desc.Start, &ou.Desc.ETR, &gp, &lon, &lat, &county, &neighborhood); err != nil {
 			return nil, err
 		}
 
@@ -259,6 +259,7 @@ order by observed_at
 		ou.Geom.Lon = lon.Float64
 		ou.Geom.Lat = lat.Float64
 		ou.Geom.County = county.String
+		ou.Geom.Neighborhood = neighborhood.String
 
 		to.Outage = ou
 		to.Events = []trackingEvent{ev}
@@ -313,9 +314,12 @@ func storeEmitExec(execer interface {
 	}
 
 	le := to.Events[len(to.Events)-1]
-	var county, cause *string
+	var county, neighborhood, cause *string
 	if c := to.Outage.Geom.County; c != "" {
 		county = &c
+	}
+	if n := to.Outage.Geom.Neighborhood; n != "" {
+		neighborhood = &n
 	}
 	if to.Outage.Desc.Cause != "" {
 		cause = &to.Outage.Desc.Cause
@@ -329,10 +333,10 @@ func storeEmitExec(execer interface {
 	}
 
 	_, err := execer.Exec(
-		"insert into outages_events (outage_id, observed_at, event_name, id, cause, cust_aff, start, etr, geom_p, lon, lat, county) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+		"insert into outages_events (outage_id, observed_at, event_name, id, cause, cust_aff, start, etr, geom_p, lon, lat, county, neighborhood) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
 		to.ID, le.ObservedAt.Format(time.RFC3339), le.Name, to.Outage.ID, cause, to.Outage.Desc.CustA.Val,
 		to.Outage.Desc.Start, to.Outage.Desc.ETR,
-		to.Outage.Geom.P[0], lon, lat, county,
+		to.Outage.Geom.P[0], lon, lat, county, neighborhood,
 	)
 	return to.ID, err
 }
@@ -405,9 +409,10 @@ type outageDesc struct {
 type outageGeom struct {
 	// maybe later
 	// A        []string
-	P        []string
-	Lon, Lat float64
-	County   string
+	P            []string
+	Lon, Lat     float64
+	County       string
+	Neighborhood string
 }
 
 type outage struct {
@@ -574,12 +579,20 @@ func (p *placer) place(outages []outage) error {
 			}
 			p.ptFeatCache[pt] = feats
 		}
+		var neighborhoodArea float64
 		for _, f := range feats {
 			name := f.Properties.MustString("wof:name")
 			placeType := f.Properties.MustString("wof:placetype")
+
 			switch placeType {
 			case "county":
 				out.Geom.County = name
+			case "neighbourhood": // whosonfirst spelling
+				// Prefer smallest neighborhood match.
+				if fa := planar.Area(f.Geometry); neighborhoodArea == 0 || fa < neighborhoodArea {
+					out.Geom.Neighborhood = name
+					neighborhoodArea = fa
+				}
 			}
 		}
 
