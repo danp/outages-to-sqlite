@@ -8,5 +8,5 @@ require (
 	github.com/paulmach/orb v0.2.1
 	github.com/peterbourgon/ff v1.7.0
 	github.com/twpayne/go-polyline v1.0.1
-	modernc.org/sqlite v1.9.0
+	modernc.org/sqlite v1.9.1-0.20210313172200-b272f0d24fce
 )
