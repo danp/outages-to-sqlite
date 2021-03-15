@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/go-git/go-git/v5"
@@ -66,18 +67,9 @@ func main() {
 		log.Fatal(err)
 	}
 
-	var maxObservedAtS sql.NullString
-	if err := db.QueryRow("select max(observed_at) from outages_events").Scan(&maxObservedAtS); err != nil {
-		log.Fatal(err)
-	}
-
 	var maxObservedAt time.Time
-	if maxObservedAtS.Valid {
-		moa, err := time.Parse(time.RFC3339, maxObservedAtS.String)
-		if err != nil {
-			log.Fatal(err)
-		}
-		maxObservedAt = moa
+	if err := db.QueryRow("select max(observed_at) from outages_events").Scan(newTimeScanner(&maxObservedAt)); err != nil {
+		log.Fatal(err)
 	}
 
 	log.Println("tracker starting with", len(tracker.known), "known outages and sourcing after", maxObservedAt)
@@ -238,18 +230,11 @@ order by observed_at
 		var to trackedOutage
 		var ev trackingEvent
 		var ou outage
-		var observedAtS string
 		var lon, lat sql.NullFloat64
 		var cause, gp, county, neighborhood sql.NullString
-		if err := rows.Scan(&to.ID, &observedAtS, &ev.Name, &ou.ID, &cause, &ou.Desc.CustA.Val, &ou.Desc.Start, &ou.Desc.ETR, &gp, &lon, &lat, &county, &neighborhood); err != nil {
+		if err := rows.Scan(&to.ID, &ev.ObservedAt, &ev.Name, &ou.ID, &cause, &ou.Desc.CustA.Val, &ou.Desc.Start, &ou.Desc.ETR, &gp, &lon, &lat, &county, &neighborhood); err != nil {
 			return nil, err
 		}
-
-		observedAt, err := time.Parse(time.RFC3339, observedAtS)
-		if err != nil {
-			return nil, err
-		}
-		ev.ObservedAt = observedAt
 
 		ou.Desc.Cause = cause.String
 
@@ -373,20 +358,26 @@ func (w weirdZoneTime) Value() (driver.Value, error) {
 }
 
 func (w *weirdZoneTime) Scan(value interface{}) error {
+	var t time.Time
+
 	if value == nil {
-		w.Time = time.Time{}
+		w.Time = t
 		return nil
 	}
 
-	s, ok := value.(string)
-	if !ok {
-		return fmt.Errorf("value %+v is not string for weirdZoneTime.Scan", value)
+	switch x := value.(type) {
+	case string:
+		tt, err := time.Parse(time.RFC3339, x)
+		if err != nil {
+			return err
+		}
+		t = tt
+	case time.Time:
+		t = x
+	default:
+		return fmt.Errorf("value %+v is not acceptable for weirdZoneTime.Scan", value)
 	}
 
-	t, err := time.Parse(time.RFC3339, s)
-	if err != nil {
-		return err
-	}
 	w.Time = t
 	return nil
 }
@@ -620,4 +611,77 @@ func isPointWithinFeature(point orb.Point, feat *geojson.Feature) bool {
 	}
 
 	return false
+}
+
+// timeScanner helps when scanning results of expressions
+// (eg `max(observed-at)` where observed_at is datetime)
+// which return datetime values that should be scanned to
+// time.Time.
+//
+// sqlite doesn't report that the result of the expression
+// is also datetime so its type is returned as text/string.
+//
+// TODO: mostly copied from modernc.org/sqlite, move to sqlite helper?
+type timeScanner struct {
+	dest *time.Time
+}
+
+func newTimeScanner(dest *time.Time) timeScanner {
+	return timeScanner{dest: dest}
+}
+
+var parseTimeFormats = []string{
+	"2006-01-02 15:04:05.999999999-07:00",
+	"2006-01-02T15:04:05.999999999-07:00",
+	"2006-01-02 15:04:05.999999999",
+	"2006-01-02T15:04:05.999999999",
+	"2006-01-02 15:04",
+	"2006-01-02T15:04",
+	"2006-01-02",
+}
+
+func (s timeScanner) Scan(value interface{}) error {
+	if value == nil {
+		*s.dest = time.Time{}
+		return nil
+	}
+
+	if vt, ok := value.(time.Time); ok {
+		*s.dest = vt
+		return nil
+	}
+
+	vs, ok := value.(string)
+	if !ok {
+		return fmt.Errorf("unknown timeScanner.Scan type %T", value)
+	}
+
+	if vt, ok := s.parseTimeString(vs); ok {
+		*s.dest = vt
+		return nil
+	}
+
+	ts := strings.TrimSuffix(vs, "Z")
+
+	for _, f := range parseTimeFormats {
+		t, err := time.Parse(f, ts)
+		if err == nil {
+			*s.dest = t
+			return nil
+		}
+	}
+
+	return fmt.Errorf("could not parse time string %q", vs)
+}
+
+func (s timeScanner) parseTimeString(v string) (time.Time, bool) {
+	meq := strings.Index(v, "m=")
+	if meq < 1 {
+		return time.Time{}, false
+	}
+
+	v = v[:meq-1] // "2006-01-02 15:04:05.999999999 -0700 MST m=+9999" -> "2006-01-02 15:04:05.999999999 -0700 MST "
+	v = strings.TrimSpace(v)
+	t, err := time.Parse("2006-01-02 15:04:05.999999999 -0700 MST", v)
+	return t, err == nil
 }
