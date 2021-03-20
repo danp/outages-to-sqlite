@@ -614,7 +614,7 @@ func isPointWithinFeature(point orb.Point, feat *geojson.Feature) bool {
 }
 
 // timeScanner helps when scanning results of expressions
-// (eg `max(observed-at)` where observed_at is datetime)
+// (eg `max(observed_at)` where observed_at is datetime)
 // which return datetime values that should be scanned to
 // time.Time.
 //
