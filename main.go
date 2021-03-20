@@ -27,7 +27,7 @@ import (
 )
 
 func main() {
-	fs := flag.NewFlagSet("nsp-outage-sync", flag.ExitOnError)
+	fs := flag.NewFlagSet("outages-to-sqlite", flag.ExitOnError)
 	var (
 		databaseFile = fs.String("database-file", "outages.db", "data file path")
 		repoRemote   = fs.String("repo-remote", "https://github.com/danp/nspoweroutages.git", "git remote of nspoweroutages repo")
