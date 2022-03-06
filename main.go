@@ -27,25 +27,24 @@ import (
 )
 
 func main() {
+	var databaseFile, repoRemote, repoPath, placesFile string
 	fs := flag.NewFlagSet("outages-to-sqlite", flag.ExitOnError)
-	var (
-		databaseFile = fs.String("database-file", "outages.db", "data file path")
-		repoRemote   = fs.String("repo-remote", "https://github.com/danp/nspoweroutages.git", "git remote of nspoweroutages repo")
-		repoPath     = fs.String("repo-path", "", "path to nspoweroutages git repo clone, preferred over -repo-remote if set")
-		placesFile   = fs.String("places-file", "", "featurecollection geojson file to use for turning outage geometries into places, defaults to embedded data")
-	)
+	fs.StringVar(&databaseFile, "database-file", "outages.db", "data file path")
+	fs.StringVar(&repoRemote, "repo-remote", "https://github.com/danp/nspoweroutages.git", "git remote of nspoweroutages repo")
+	fs.StringVar(&repoPath, "repo-path", "", "path to nspoweroutages git repo clone, preferred over -repo-remote if set")
+	fs.StringVar(&placesFile, "places-file", "", "featurecollection geojson file to use for turning outage geometries into places, defaults to embedded data")
 	ff.Parse(fs, os.Args[1:])
 
 	var openRepo func() (*git.Repository, error)
-	if *repoPath != "" {
-		openRepo = localOpenRepo(*repoPath)
-	} else if *repoRemote != "" {
-		openRepo = remoteOpenRepo(*repoRemote)
+	if repoPath != "" {
+		openRepo = localOpenRepo(repoPath)
+	} else if repoRemote != "" {
+		openRepo = remoteOpenRepo(repoRemote)
 	} else {
 		log.Fatal("need -repo-remote or -repo-path")
 	}
 
-	db, err := sql.Open("sqlite", *databaseFile)
+	db, err := sql.Open("sqlite", databaseFile+"?_time_format=sqlite&_pragma=foreign_keys(1)")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -55,7 +54,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	places, err := loadPlaces(*placesFile)
+	places, err := loadPlaces(placesFile)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -68,7 +67,7 @@ func main() {
 	}
 
 	var maxObservedAt time.Time
-	if err := db.QueryRow("select max(observed_at) from outages_events").Scan(newTimeScanner(&maxObservedAt)); err != nil {
+	if err := db.QueryRow("select max(observed_at) from outage_events").Scan(newTimeScanner(&maxObservedAt)); err != nil {
 		log.Fatal(err)
 	}
 
@@ -194,15 +193,15 @@ type store struct {
 }
 
 func (s *store) init() error {
-	if _, err := s.db.Exec("pragma foreign_keys = on"); err != nil {
+	if _, err := s.db.Exec("create table if not exists outages (id integer primary key, longitude numeric, latitude numeric, county text, neighborhood text, area_polyline text)"); err != nil {
 		return err
 	}
 
-	if _, err := s.db.Exec("create table if not exists outages (id integer primary key)"); err != nil {
+	if _, err := s.db.Exec("create table if not exists outage_events (outage_id integer references outages on delete cascade, observed_at datetime, removed bool, cause text, cust_aff int, start datetime, etr datetime, primary key(outage_id, observed_at))"); err != nil {
 		return err
 	}
 
-	if _, err := s.db.Exec("create table if not exists outages_events (outage_id integer references outages on delete cascade, observed_at datetime, event_name text, id text, cause text, cust_aff integer, start datetime, etr datetime, geom_p text, lon numeric, lat numeric, county text, neighborhood text, primary key(outage_id, observed_at))"); err != nil {
+	if _, err := s.db.Exec("create table if not exists outage_summaries (id integer primary key references outages on delete cascade, resolved bool, first_observed datetime, last_observed datetime, observations int, min_cust_aff int, max_cust_aff int, min_start datetime, max_etr datetime, last_cause text, longitude numeric, latitude numeric, county text, neighborhood text)"); err != nil {
 		return err
 	}
 
@@ -211,13 +210,12 @@ func (s *store) init() error {
 
 func (s *store) currentOutages() (map[int]trackedOutage, error) {
 	rows, err := s.db.Query(`
-with max_observed_ats as (select outage_id, max(observed_at) as max_observed_at from outages_events group by outage_id)
-select outages_events.outage_id, observed_at, event_name, id, cause, cust_aff, start, etr,
-geom_p, lon, lat, county, neighborhood
-from outages_events, max_observed_ats
-where max_observed_ats.outage_id=outages_events.outage_id and
-max_observed_ats.max_observed_at=outages_events.observed_at and
-event_name in ('Initial', 'Update')
+with max_observed_ats as (select outage_id, max(observed_at) as max_observed_at from outage_events group by outage_id)
+select id, longitude, latitude, county, neighborhood, observed_at, cause, cust_aff, start, etr
+from outages, outage_events, max_observed_ats
+where max_observed_ats.outage_id=outage_events.outage_id and
+max_observed_ats.max_observed_at=outage_events.observed_at and
+outages.id=outage_events.outage_id and removed=0
 order by observed_at
 `)
 	if err != nil {
@@ -230,19 +228,16 @@ order by observed_at
 		var to trackedOutage
 		var ev trackingEvent
 		var ou outage
-		var lon, lat sql.NullFloat64
-		var cause, gp, county, neighborhood sql.NullString
-		if err := rows.Scan(&to.ID, &ev.ObservedAt, &ev.Name, &ou.ID, &cause, &ou.Desc.CustA.Val, &ou.Desc.Start, &ou.Desc.ETR, &gp, &lon, &lat, &county, &neighborhood); err != nil {
+		var lon, lat float64
+		var cause, county, neighborhood sql.NullString
+		if err := rows.Scan(&to.ID, &lon, &lat, &county, &neighborhood, &ev.ObservedAt, &cause, &ou.Desc.CustA.Val, &ou.Desc.Start, &ou.Desc.ETR); err != nil {
 			return nil, err
 		}
 
 		ou.Desc.Cause = cause.String
 
-		if gp.Valid && gp.String != "" {
-			ou.Geom.P = []string{gp.String}
-		}
-		ou.Geom.Lon = lon.Float64
-		ou.Geom.Lat = lat.Float64
+		ou.Geom.Lon = lon
+		ou.Geom.Lat = lat
 		ou.Geom.County = county.String
 		ou.Geom.Neighborhood = neighborhood.String
 
@@ -287,7 +282,18 @@ func storeEmitExec(execer interface {
 	Exec(string, ...interface{}) (sql.Result, error)
 }, to trackedOutage) (int, error) {
 	if to.ID == 0 {
-		res, err := execer.Exec("insert into outages (id) values (null)")
+		var county, neighborhood, area *string
+		if c := to.Outage.Geom.County; c != "" {
+			county = &c
+		}
+		if n := to.Outage.Geom.Neighborhood; n != "" {
+			neighborhood = &n
+		}
+		if len(to.Outage.Geom.A) > 0 {
+			area = &to.Outage.Geom.A[0]
+		}
+
+		res, err := execer.Exec("insert into outages (longitude, latitude, county, neighborhood, area_polyline) values (?, ?, ?, ?, ?)", to.Outage.Geom.Lon, to.Outage.Geom.Lat, county, neighborhood, area)
 		if err != nil {
 			return 0, err
 		}
@@ -299,31 +305,56 @@ func storeEmitExec(execer interface {
 	}
 
 	le := to.Events[len(to.Events)-1]
-	var county, neighborhood, cause *string
-	if c := to.Outage.Geom.County; c != "" {
-		county = &c
-	}
-	if n := to.Outage.Geom.Neighborhood; n != "" {
-		neighborhood = &n
-	}
+	removed := le.Name == "Missing"
+
+	var cause *string
 	if to.Outage.Desc.Cause != "" {
 		cause = &to.Outage.Desc.Cause
 	}
-	var lon, lat *float64
-	if l := to.Outage.Geom.Lat; l != 0 {
-		lat = &l
-	}
-	if l := to.Outage.Geom.Lon; l != 0 {
-		lon = &l
-	}
 
 	_, err := execer.Exec(
-		"insert into outages_events (outage_id, observed_at, event_name, id, cause, cust_aff, start, etr, geom_p, lon, lat, county, neighborhood) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-		to.ID, le.ObservedAt.Format(time.RFC3339), le.Name, to.Outage.ID, cause, to.Outage.Desc.CustA.Val,
-		to.Outage.Desc.Start, to.Outage.Desc.ETR,
-		to.Outage.Geom.P[0], lon, lat, county, neighborhood,
+		"insert into outage_events (outage_id, observed_at, removed, cause, cust_aff, start, etr) values (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+		to.ID, le.ObservedAt.Format(time.RFC3339), removed, cause, to.Outage.Desc.CustA.Val, to.Outage.Desc.Start, to.Outage.Desc.ETR,
 	)
-	return to.ID, err
+	if err != nil {
+		return 0, err
+	}
+
+	if _, err := execer.Exec("delete from outage_summaries where id=?", to.ID); err != nil {
+		return 0, err
+	}
+
+	q := `
+with
+summary as (
+  select
+    outage_id as id,
+    min(observed_at) as first_observed,
+    max(observed_at) as last_observed,
+    count(*) as observations,
+    min(cust_aff) as min_cust_aff,
+    max(cust_aff) as max_cust_aff,
+    min(start) as min_start,
+    max(etr) as max_etr
+  from outage_events
+  group by 1
+)
+insert into outage_summaries
+select
+summary.id,
+(select removed from outage_events where outage_id=summary.id and observed_at=last_observed),
+first_observed, last_observed, observations, min_cust_aff, max_cust_aff, min_start, max_etr,
+(select cause from outage_events where outage_id=summary.id and observed_at=last_observed),
+longitude, latitude, county, neighborhood
+from summary, outages
+where summary.id=? and summary.id=outages.id
+`
+
+	if _, err := execer.Exec(q, to.ID); err != nil {
+		return 0, err
+	}
+
+	return to.ID, nil
 }
 
 type weirdZoneTime struct{ time.Time }
@@ -398,8 +429,7 @@ type outageDesc struct {
 }
 
 type outageGeom struct {
-	// maybe later
-	// A        []string
+	A            []string
 	P            []string
 	Lon, Lat     float64
 	County       string
@@ -424,18 +454,10 @@ type trackedOutage struct {
 	Outage outage
 }
 
-func (t trackedOutage) String() string {
-	b, err := json.Marshal(t)
-	if err != nil {
-		panic(err)
-	}
-	return string(b)
-}
-
 type outageTracker struct {
 	st outageStore
-	// geom.p is key
-	known map[string]trackedOutage
+	// geom.Lon/Lat is key
+	known map[lonLatKey]trackedOutage
 }
 
 type outageStore interface {
@@ -450,7 +472,7 @@ type storeObservation interface {
 }
 
 func newOutageTracker(st outageStore) *outageTracker {
-	return &outageTracker{st: st, known: make(map[string]trackedOutage)}
+	return &outageTracker{st: st, known: make(map[lonLatKey]trackedOutage)}
 }
 
 func (o *outageTracker) loadState() error {
@@ -460,10 +482,14 @@ func (o *outageTracker) loadState() error {
 	}
 
 	for _, to := range co {
-		o.known[to.Outage.Geom.P[0]] = to
+		o.known[lonLatKey{to.Outage.Geom.Lon, to.Outage.Geom.Lat}] = to
 	}
 
 	return nil
+}
+
+type lonLatKey struct {
+	lon, lat float64
 }
 
 func (o *outageTracker) observe(t time.Time, outages []outage) error {
@@ -475,18 +501,19 @@ func (o *outageTracker) observe(t time.Time, outages []outage) error {
 	}
 	defer so.close()
 
-	ui := make(map[string]bool)
+	ui := make(map[lonLatKey]bool)
 nextOutage:
 	for _, out := range outages {
-		k, ok := o.known[out.Geom.P[0]]
+		key := lonLatKey{out.Geom.Lon, out.Geom.Lat}
+		k, ok := o.known[key]
 		if ok {
 			k.Events = append(k.Events, trackingEvent{ObservedAt: t, Name: "Update"})
 			k.Outage = out
-			o.known[out.Geom.P[0]] = k
+			o.known[key] = k
 			if _, err := so.emit(k); err != nil {
 				return err
 			}
-			ui[out.Geom.P[0]] = true
+			ui[key] = true
 			continue nextOutage
 		}
 
@@ -496,8 +523,8 @@ nextOutage:
 			return err
 		}
 		to.ID = id
-		o.known[out.Geom.P[0]] = to
-		ui[out.Geom.P[0]] = true
+		o.known[key] = to
+		ui[key] = true
 	}
 
 	for ki, ko := range o.known {
