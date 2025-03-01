@@ -68,7 +68,7 @@ func main() {
 	}
 
 	var maxObservedAt time.Time
-	if err := db.QueryRow("select max(observed_at) from outage_events").Scan(newTimeScanner(&maxObservedAt)); err != nil {
+	if err := db.QueryRow("select max(last_observed) from outage_summaries").Scan(newTimeScanner(&maxObservedAt)); err != nil {
 		log.Fatal(err)
 	}
 
@@ -219,17 +219,21 @@ func (s *store) init() error {
 		return err
 	}
 
+	if _, err := s.db.Exec("create index if not exists outage_summaries_unresolved on outage_summaries (id, last_observed) where resolved=0"); err != nil {
+		return err
+	}
+
 	return nil
 }
 
 func (s *store) currentOutages() (map[int]trackedOutage, error) {
 	rows, err := s.db.Query(`
-with max_observed_ats as (select outage_id, max(observed_at) as max_observed_at from outage_events group by outage_id)
+with max_observed_ats as (select id as outage_id, last_observed as max_observed_at from outage_summaries where resolved=0)
 select id, longitude, latitude, county, neighborhood, observed_at, cause, cust_aff, start, etr
 from outages, outage_events, max_observed_ats
 where max_observed_ats.outage_id=outage_events.outage_id and
 max_observed_ats.max_observed_at=outage_events.observed_at and
-outages.id=outage_events.outage_id and removed=0
+outages.id=outage_events.outage_id
 order by observed_at
 `)
 	if err != nil {
