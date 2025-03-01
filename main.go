@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -110,12 +111,12 @@ func remoteOpenRepo(remote string) func() (*git.Repository, error) {
 func gitSource(openRepo func() (*git.Repository, error), outagesFileName string, since time.Time, consume func(time.Time, io.Reader) error) error {
 	repo, err := openRepo()
 	if err != nil {
-		return err
+		return fmt.Errorf("opening repo: %w", err)
 	}
 
 	head, err := repo.Head()
 	if err != nil {
-		return err
+		return fmt.Errorf("head: %w", err)
 	}
 
 	logOpts := &git.LogOptions{
@@ -123,34 +124,47 @@ func gitSource(openRepo func() (*git.Repository, error), outagesFileName string,
 		From:  head.Hash(),
 	}
 	if !since.IsZero() {
-		logOpts.Since = &since
+		logSince := since.Add(-time.Second) // we want to see it
+		logOpts.Since = &logSince
 	}
 
 	iter, err := repo.Log(logOpts)
 	if err != nil {
-		return err
+		return fmt.Errorf("log: %w", err)
 	}
 
+	var sawSince bool
 	var commits []*object.Commit
-	if err := iter.ForEach(func(c *object.Commit) error {
+	for {
+		c, err := iter.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("iterating commits: %w", err)
+		}
+		if !since.IsZero() && c.Committer.When.Equal(since) {
+			sawSince = true
+			break
+		}
 		commits = append(commits, c)
-		return nil
-	}); err != nil {
-		return err
+	}
+	if !sawSince {
+		return fmt.Errorf("did not see since commit %v", since)
 	}
 
 	var lastHash plumbing.Hash
 	process := func(c *object.Commit) error {
 		tr, err := c.Tree()
 		if err != nil {
-			return err
+			return fmt.Errorf("tree: %w", err)
 		}
 		f, err := tr.File(outagesFileName)
 		if err != nil {
 			if err == object.ErrFileNotFound {
 				return nil
 			}
-			return err
+			return fmt.Errorf("file: %w", err)
 		}
 
 		// LogOptions.Since includes commit(s) with its value
@@ -171,7 +185,7 @@ func gitSource(openRepo func() (*git.Repository, error), outagesFileName string,
 
 		r, err := f.Reader()
 		if err != nil {
-			return err
+			return fmt.Errorf("reader: %w", err)
 		}
 		defer r.Close()
 
@@ -181,7 +195,7 @@ func gitSource(openRepo func() (*git.Repository, error), outagesFileName string,
 	for i := len(commits) - 1; i >= 0; i-- {
 		c := commits[i]
 		if err := process(c); err != nil {
-			return err
+			return fmt.Errorf("process: %w", err)
 		}
 	}
 
