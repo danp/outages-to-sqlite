@@ -297,7 +297,7 @@ func (s *store) emit(to trackedOutage) (int, error) {
 }
 
 func storeEmitExec(execer interface {
-	Exec(string, ...interface{}) (sql.Result, error)
+	Exec(string, ...any) (sql.Result, error)
 }, to trackedOutage) (int, error) {
 	if to.ID == 0 {
 		var county, neighborhood, area *string
@@ -406,7 +406,7 @@ func (w weirdZoneTime) Value() (driver.Value, error) {
 	return w.Time.Format(time.RFC3339), nil
 }
 
-func (w *weirdZoneTime) Scan(value interface{}) error {
+func (w *weirdZoneTime) Scan(value any) error {
 	var t time.Time
 
 	if value == nil {
@@ -685,7 +685,7 @@ var parseTimeFormats = []string{
 	"2006-01-02",
 }
 
-func (s timeScanner) Scan(value interface{}) error {
+func (s timeScanner) Scan(value any) error {
 	if value == nil {
 		*s.dest = time.Time{}
 		return nil
