@@ -19,12 +19,13 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/storage/memory"
+	_ "github.com/ncruces/go-sqlite3/driver"
+	_ "github.com/ncruces/go-sqlite3/embed"
 	"github.com/paulmach/orb"
 	"github.com/paulmach/orb/geojson"
 	"github.com/paulmach/orb/planar"
 	"github.com/peterbourgon/ff"
 	"github.com/twpayne/go-polyline"
-	_ "modernc.org/sqlite"
 )
 
 func main() {
@@ -45,7 +46,7 @@ func main() {
 		log.Fatal("need -repo-remote or -repo-path")
 	}
 
-	db, err := sql.Open("sqlite", databaseFile+"?_time_format=sqlite&_pragma=foreign_keys(1)")
+	db, err := sql.Open("sqlite3", databaseFile)
 	if err != nil {
 		log.Fatal(err)
 	}

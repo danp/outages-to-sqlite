@@ -6,11 +6,12 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
-	_ "modernc.org/sqlite"
+	_ "github.com/ncruces/go-sqlite3/driver"
+	_ "github.com/ncruces/go-sqlite3/embed"
 )
 
 func TestStoreCurrentOutages(t *testing.T) {
-	db, err := sql.Open("sqlite", "file::memory:")
+	db, err := sql.Open("sqlite3", "file::memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +103,7 @@ func TestStoreCurrentOutages(t *testing.T) {
 }
 
 func TestStoreCurrentOutagesEmpty(t *testing.T) {
-	db, err := sql.Open("sqlite", "file::memory:")
+	db, err := sql.Open("sqlite3", "file::memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +125,7 @@ func TestStoreCurrentOutagesEmpty(t *testing.T) {
 }
 
 func TestStoreEmitNew(t *testing.T) {
-	db, err := sql.Open("sqlite", "file::memory:")
+	db, err := sql.Open("sqlite3", "file::memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +183,7 @@ func TestStoreEmitNew(t *testing.T) {
 }
 
 func TestStoreEmitExisting(t *testing.T) {
-	db, err := sql.Open("sqlite", "file::memory:")
+	db, err := sql.Open("sqlite3", "file::memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
